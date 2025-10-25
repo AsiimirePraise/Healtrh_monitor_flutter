@@ -499,6 +499,28 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
     addLog('Logs cleared');
   }
 
+  // Heart rate status helper methods
+  String _getHeartRateStatus(int rate) {
+    if (rate == 0) return 'NO SIGNAL';
+    if (rate < 60) return 'LOW (Below 60 BPM)';
+    if (rate > 100) return 'HIGH (Above 100 BPM)';
+    return 'NORMAL (60-100 BPM)';
+  }
+
+  Color _getHeartRateStatusColor(int rate) {
+    if (rate == 0) return Colors.grey;
+    if (rate < 60) return Colors.blue;
+    if (rate > 100) return Colors.red;
+    return Colors.green;
+  }
+
+  IconData _getHeartRateStatusIcon(int rate) {
+    if (rate == 0) return Icons.sensors_off;
+    if (rate < 60) return Icons.arrow_downward;
+    if (rate > 100) return Icons.arrow_upward;
+    return Icons.check_circle;
+  }
+
   @override
   void dispose() {
     characteristicSubscription?.cancel();
@@ -525,7 +547,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
             Text(isConnected ? 'Device Connected' : 'VitaTrack Pro'),
           ],
         ),
-        backgroundColor: isDark ? Color(0xFF1E3A8A) : Color(0xFF3B82F6),
+        backgroundColor: isDark ? Color.fromARGB(255, 93, 101, 122) : Color.fromARGB(255, 90, 96, 105),
         actions: [
           Tooltip(
             message: 'Toggle Theme',
@@ -730,14 +752,8 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
 
   Widget _buildConnectedUI(bool isDark, Color bgColor, Color cardColor, Color textColor) {
     // Calculate dynamic Y-axis ranges for better graph scaling
-    double heartRateMin = heartRateHistory.isEmpty ? 0 : (heartRateHistory.map((e) => e.y).reduce(min) * 0.8);
-    double heartRateMax = heartRateHistory.isEmpty ? 100 : (heartRateHistory.map((e) => e.y).reduce(max) * 1.2);
-    
-    double tempMin = temperatureHistory.isEmpty ? 0 : (temperatureHistory.map((e) => e.y).reduce(min) * 0.9);
-    double tempMax = temperatureHistory.isEmpty ? 50 : (temperatureHistory.map((e) => e.y).reduce(max) * 1.1);
-    
-    double humidityMin = humidityHistory.isEmpty ? 0 : (humidityHistory.map((e) => e.y).reduce(min) * 0.9);
-    double humidityMax = humidityHistory.isEmpty ? 100 : (humidityHistory.map((e) => e.y).reduce(max) * 1.1);
+    final double heartRateMin = heartRateHistory.isEmpty ? 0 : (heartRateHistory.map((e) => e.y).reduce(min) * 0.8);
+    final double heartRateMax = heartRateHistory.isEmpty ? 100 : (heartRateHistory.map((e) => e.y).reduce(max) * 1.2);
 
     return SingleChildScrollView(
       child: Column(
@@ -794,31 +810,33 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
                           fontWeight: FontWeight.w500,
                         ),
                       ),
-                      if (heartAlert) ...[
-                        SizedBox(height: 12),
-                        Container(
-                          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.warning_amber_rounded, color: Colors.white, size: 16),
-                              SizedBox(width: 6),
-                              Text(
-                                'ABNORMAL READING',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: _getHeartRateStatusColor(heartRate).withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(20),
                         ),
-                      ],
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Icon(
+                              _getHeartRateStatusIcon(heartRate),
+                              color: _getHeartRateStatusColor(heartRate),
+                              size: 16
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              _getHeartRateStatus(heartRate),
+                              style: TextStyle(
+                                color: _getHeartRateStatusColor(heartRate),
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
