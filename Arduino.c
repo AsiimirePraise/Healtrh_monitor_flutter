@@ -1,7 +1,8 @@
 /*
- * ESP32 Health Monitor - 9 Beeps when BLE data is sent to connected device
- * Now with MAX30102 Heart Rate Sensor
- * Updated: Heart rate alerts for readings outside 60-100 BPM range
+ * ESP32 Health Monitor
+ * MAX30102 Heart Rate + DHT11 Temperature/Humidity
+ * BLE transmission every 1 minute with 10 beeps
+ * Critical alert (5 beeps) when heart rate < 50 BPM
  */
 
 #include <BLEDevice.h>
@@ -13,16 +14,15 @@
 #include "MAX30105.h"
 #include "heartRate.h"
 
-// Sensor and component pins
+// Pin definitions
 #define DHT11PIN 5
 #define BUZZER_PIN 18
 #define DHT_TYPE DHT11
-DHT dht(DHT11PIN, DHT_TYPE);
 
-// MAX30102 Particle Sensor
+DHT dht(DHT11PIN, DHT_TYPE);
 MAX30105 particleSensor;
 
-// Heart rate calculation variables
+// Heart rate calculation
 const byte RATE_SIZE = 4;
 byte rates[RATE_SIZE];
 byte rateSpot = 0;
@@ -30,115 +30,94 @@ long lastBeat = 0;
 float beatsPerMinute = 0;
 int beatAvg = 0;
 
-// BLE Service and Characteristic UUIDs
+// BLE configuration
 #define SERVICE_UUID        "12345678-1234-1234-1234-123456789012"
 #define CHARACTERISTIC_UUID "12345678-1234-1234-1234-123456789013"
 
-// BLE global variables
 BLEServer *pServer = NULL;
 BLECharacteristic *pCharacteristic = NULL;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
-// Buzzer configuration - 9 beeps pattern
-#define BEEP_FREQUENCY 1500
+// Buzzer patterns
+#define BEEP_FREQUENCY 4000
 #define BEEP_DURATION 150
 #define BEEP_PAUSE 100
-#define NUM_BEEPS 9
+#define NUM_BEEPS 10
 
-// Sensor data variables
+#define CRITICAL_BEEP_FREQUENCY 9000
+#define CRITICAL_BEEP_DURATION 200
+#define CRITICAL_BEEP_PAUSE 100
+#define CRITICAL_NUM_BEEPS 20
+
+// Sensor data
 float temperature = NAN;
 float humidity = NAN;
 
-// Timing control variables
+// Timing control
 unsigned long lastDHTRead = 0;
 unsigned long lastBLEUpdate = 0;
 unsigned long lastHeartRateReading = 0;
-const unsigned long HEART_RATE_READING_INTERVAL = 20000; // 20 seconds between heart rate displays
+unsigned long lastCriticalHeartAlert = 0;
+const unsigned long HEART_RATE_READING_INTERVAL = 10000;
+const unsigned long CRITICAL_HEART_ALERT_INTERVAL = 30000;
 
-// Alert thresholds - UPDATED TO 60-100 RANGE
+// Health thresholds
 #define HEART_NORMAL_LOW 60
 #define HEART_NORMAL_HIGH 100
-
+#define HEART_CRITICAL_LOW 50
 #define HUMIDITY_LOW 50.0
 #define HUMIDITY_HIGH 65.0
-
 #define TEMP_ALERT_THRESHOLD 30.0
 #define CONSECUTIVE_TEMP_REQUIRED 5
-#define BLE_UPDATE_INTERVAL 60000UL       // 1 minute between BLE updates
+#define BLE_UPDATE_INTERVAL 60000UL
 
-// Alert tracking variables
+// Alert tracking
 int consecutiveHighTempCount = 0;
 bool lastHeartAlert = false;
 bool lastTempAlert = false;
-
-// Buzzer control
 bool shouldPlayBuzzer = false;
+bool shouldPlayCriticalAlert = false;
 
-/**
- * BLE Server Callbacks - Handle connection and disconnection events
- */
+// BLE Server Callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
     deviceConnected = true;
     Serial.println("\n>>> BLE CLIENT CONNECTED <<<");
-    Serial.println("✓ Device: HealthMonitor");
-    Serial.println("✓ Data transmission: Every 1 minute");
-    Serial.println("✓ Buzzer: 9 beeps when data is sent to connected device");
-    Serial.println("✓ Sensors: DHT11, MAX30102 Heart Rate");
-    Serial.println("✓ Normal Heart Rate Range: 60-100 BPM");
-    Serial.println("✓ Ready for health monitoring\n");
-    
     lastBLEUpdate = millis() - BLE_UPDATE_INTERVAL;
   };
   
   void onDisconnect(BLEServer* pServer) {
     deviceConnected = false;
     Serial.println("\n>>> BLE CLIENT DISCONNECTED <<<");
-    Serial.println("====BLE advertising restarted");
     Serial.println("====Waiting for new connections...\n");
     
     lastHeartAlert = false;
     lastTempAlert = false;
     consecutiveHighTempCount = 0;
-    shouldPlayBuzzer = false; // Reset buzzer flag on disconnect
+    shouldPlayBuzzer = false;
+    shouldPlayCriticalAlert = false;
   }
 };
 
-/**
- * Setup function - Initializes all components
- */
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  // Initialize pins
   pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);  // Ensure buzzer is off initially
+  digitalWrite(BUZZER_PIN, LOW);
   dht.begin();
 
-  // Initialize MAX30102 heart rate sensor
   initHeartRateSensor();
 
-  // Print startup information
   Serial.println("\n==================================================");
   Serial.println("       ESP32 HEALTH MONITOR - INITIALIZED");
   Serial.println("==================================================");
-  Serial.println("Device: HealthMonitor");
-  Serial.println("Sensors: DHT11 (Temp/Humidity), MAX30102 (Heart Rate)");
-  Serial.println("Buzzer: 9 BEEPS when BLE data is sent to connected device");
-  Serial.println("BLE: Enabled with 1-minute data intervals");
-  Serial.println("Heart Rate: MAX30102 with 20-second reading intervals");
-  Serial.println("Normal Heart Rate Range: 60-100 BPM");
-  Serial.println("==================================================\n");
 
-  // Initialize BLE
   initBLE();
 }
 
-/**
- * Initialize MAX30102 heart rate sensor
- */
+// Initialize MAX30102 sensor
 void initHeartRateSensor() {
   Serial.println("Initializing MAX30102 Heart Rate Sensor...");
   
@@ -151,13 +130,10 @@ void initHeartRateSensor() {
   particleSensor.setPulseAmplitudeRed(0x0A);
   particleSensor.setPulseAmplitudeGreen(0);
   
-  Serial.println("MAX30102 Heart Rate Sensor initialized successfully");
-  Serial.println("Place your finger on the sensor for heart rate readings");
+  Serial.println("MAX30102 initialized successfully");
 }
 
-/**
- * Initialize BLE service and start advertising
- */
+// Initialize BLE service
 void initBLE() {
   BLEDevice::init("HealthMonitor");
   BLEDevice::setPower(ESP_PWR_LVL_P7);
@@ -185,58 +161,54 @@ void initBLE() {
   BLEDevice::startAdvertising();
   
   Serial.println("====BLE Service initialized successfully");
-  Serial.println("===Device now advertising as 'HealthMonitor'");
-  Serial.println("===Waiting for BLE connections...\n");
 }
 
-/**
- * Main loop - Handles sensor reading, alert detection, and BLE communication
- */
 void loop() {
   unsigned long currentTime = millis();
 
-  // Read and process heart rate data from MAX30102
   readHeartRateSensor();
   
-  // Read DHT11 sensor every 2 seconds
   if (currentTime - lastDHTRead > 2000UL) {
     readDHTSensor();
     lastDHTRead = currentTime;
   }
 
-  // Display heart rate reading every 20 seconds
   if (currentTime - lastHeartRateReading >= HEART_RATE_READING_INTERVAL) {
     displayHeartRateReading();
     lastHeartRateReading = currentTime;
   }
 
-  // Check for various health alerts
   bool currentHeartAlert = checkHeartAlert();
   bool currentHumidityAlert = checkHumidityAlert();
   bool currentTempAlert = checkTemperatureAlert();
 
-  // Send BLE data every minute if device is connected
+  if (checkCriticalHeartRate() && (currentTime - lastCriticalHeartAlert >= CRITICAL_HEART_ALERT_INTERVAL)) {
+    shouldPlayCriticalAlert = true;
+    lastCriticalHeartAlert = currentTime;
+  }
+
   if (deviceConnected && (currentTime - lastBLEUpdate >= BLE_UPDATE_INTERVAL)) {
-    Serial.println("\n>>> SENDING BLE DATA - PLAYING 9 BEEPS <<<");
-    shouldPlayBuzzer = true; // Set flag to play buzzer
+    Serial.println("\n>>> SENDING BLE DATA - PLAYING 10 BEEPS <<<");
+    shouldPlayBuzzer = true;
     sendBLEData(currentHeartAlert, currentTempAlert, currentHumidityAlert);
     lastBLEUpdate = currentTime;
   }
 
-  // Handle buzzer playback
-  if (shouldPlayBuzzer) {
-    playNineBeeps();
-    shouldPlayBuzzer = false; // Reset flag after playing
+  if (shouldPlayCriticalAlert) {
+    playCriticalHeartAlert();
+    shouldPlayCriticalAlert = false;
   }
 
-  // Update previous alert states
+  if (shouldPlayBuzzer) {
+    playNineBeeps();
+    shouldPlayBuzzer = false;
+  }
+
   lastHeartAlert = currentHeartAlert;
   lastTempAlert = currentTempAlert;
 
-  // Handle BLE connection state changes
   handleBLEConnection();
 
-  // Print debug information every 10 seconds
   static unsigned long lastDebugPrint = 0;
   if (currentTime - lastDebugPrint > 10000UL) {
     printDebugInfo(currentHeartAlert, currentTempAlert, currentHumidityAlert);
@@ -246,14 +218,11 @@ void loop() {
   delay(50);
 }
 
-/**
- * Read and process heart rate data from MAX30102
- */
+// Read heart rate from MAX30102
 void readHeartRateSensor() {
   long irValue = particleSensor.getIR();
 
   if (checkForBeat(irValue) == true) {
-    // We sensed a beat!
     long delta = millis() - lastBeat;
     lastBeat = millis();
 
@@ -263,7 +232,6 @@ void readHeartRateSensor() {
       rates[rateSpot++] = (byte)beatsPerMinute;
       rateSpot %= RATE_SIZE;
 
-      // Calculate average heart rate
       beatAvg = 0;
       for (byte x = 0 ; x < RATE_SIZE ; x++)
         beatAvg += rates[x];
@@ -271,15 +239,18 @@ void readHeartRateSensor() {
     }
   }
 
-  // If no finger detected, reset average
   if (irValue < 50000) {
     beatAvg = 0;
   }
 }
 
-/**
- * Display heart rate reading with clear formatting and status
- */
+// Check for critical heart rate
+bool checkCriticalHeartRate() {
+  long irValue = particleSensor.getIR();
+  return (irValue >= 50000 && beatAvg > 0 && beatAvg < HEART_CRITICAL_LOW);
+}
+
+// Display heart rate reading
 void displayHeartRateReading() {
   long irValue = particleSensor.getIR();
   
@@ -298,9 +269,10 @@ void displayHeartRateReading() {
     Serial.print("Average BPM: ");
     Serial.println(beatAvg);
     
-    // Display status based on range
     Serial.print("Status: ");
-    if (beatAvg < HEART_NORMAL_LOW) {
+    if (beatAvg < HEART_CRITICAL_LOW) {
+      Serial.println("CRITICAL LOW (Below 50 BPM) ");
+    } else if (beatAvg < HEART_NORMAL_LOW) {
       Serial.println("LOW (Below 60 BPM)");
     } else if (beatAvg > HEART_NORMAL_HIGH) {
       Serial.println("HIGH (Above 100 BPM)");
@@ -317,9 +289,7 @@ void displayHeartRateReading() {
   Serial.println();
 }
 
-/**
- * Read temperature and humidity from DHT11 sensor
- */
+// Read DHT11 sensor
 void readDHTSensor() {
   float tempReading = dht.readTemperature();
   float humidityReading = dht.readHumidity();
@@ -332,27 +302,18 @@ void readDHTSensor() {
   }
 }
 
-/**
- * Check for heart rate abnormalities - UPDATED TO 60-100 BPM RANGE
- * Returns: true if heart rate is outside normal 60-100 BPM range
- */
+// Check heart rate alert (60-100 BPM range)
 bool checkHeartAlert() {
   return (beatAvg > 0 && (beatAvg < HEART_NORMAL_LOW || beatAvg > HEART_NORMAL_HIGH));
 }
 
-/**
- * Check for humidity abnormalities
- * Returns: true if humidity is outside 50-65% range
- */
+// Check humidity alert (50-65% range)
 bool checkHumidityAlert() {
   return (!isnan(humidity) && 
          (humidity < HUMIDITY_LOW || humidity > HUMIDITY_HIGH));
 }
 
-/**
- * Check for temperature abnormalities using consecutive readings
- * Returns: true if temperature has been high for 5 consecutive readings
- */
+// Check temperature alert (consecutive high readings)
 bool checkTemperatureAlert() {
   if (!isnan(temperature)) {
     if (temperature > TEMP_ALERT_THRESHOLD) {
@@ -365,9 +326,7 @@ bool checkTemperatureAlert() {
   return (consecutiveHighTempCount >= CONSECUTIVE_TEMP_REQUIRED);
 }
 
-/**
- * Handle BLE connection and reconnection logic
- */
+// Handle BLE connection state
 void handleBLEConnection() {
   if (!deviceConnected && oldDeviceConnected) {
     delay(500);
@@ -380,12 +339,10 @@ void handleBLEConnection() {
   }
 }
 
-/**
- * Send health data via BLE in JSON format - Now includes BPM
- */
+// Send health data via BLE
 void sendBLEData(bool heartAlert, bool tempAlert, bool humidityAlert) {
   String jsonData = "{";
-  jsonData += "\"h\":" + String(beatAvg);  // Now using BPM from MAX30102
+  jsonData += "\"h\":" + String(beatAvg);
   jsonData += ",\"t\":" + String(temperature, 1);
   jsonData += ",\"m\":" + String(humidity, 1);
   jsonData += ",\"a\":" + String(heartAlert ? 1 : 0);
@@ -411,11 +368,34 @@ void sendBLEData(bool heartAlert, bool tempAlert, bool humidityAlert) {
   pCharacteristic->notify();
 }
 
-/**
- * Play 9 beeps pattern when BLE data is transmitted
- */
+// Play critical heart rate alert
+void playCriticalHeartAlert() {
+  Serial.println("HEART RATE BELOW 50 BPM - PLAYING 5 URGENT BEEPS");
+  Serial.print("Current Heart Rate: ");
+  Serial.print(beatAvg);
+  Serial.println(" BPM");
+  
+  for (int i = 1; i <= CRITICAL_NUM_BEEPS; i++) {
+    Serial.print("CRITICAL BEEP ");
+    Serial.println(i);
+    
+    tone(BUZZER_PIN, CRITICAL_BEEP_FREQUENCY, CRITICAL_BEEP_DURATION);
+    delay(CRITICAL_BEEP_DURATION + CRITICAL_BEEP_PAUSE);
+    noTone(BUZZER_PIN);
+    
+    if (i < CRITICAL_NUM_BEEPS) {
+      delay(50);
+    }
+  }
+  
+  digitalWrite(BUZZER_PIN, LOW);
+  Serial.println("Critical alert beeps completed");
+  Serial.println("------------------------------------------\n");
+}
+
+// Play 10 beeps for BLE transmission
 void playNineBeeps() {
-  Serial.println("PLAYING 9 BEEPS - BLE DATA TRANSMISSION");
+  Serial.println("PLAYING 10 BEEPS - BLE DATA TRANSMISSION");
   
   for (int i = 1; i <= NUM_BEEPS; i++) {
     Serial.print("BEEP ");
@@ -425,23 +405,19 @@ void playNineBeeps() {
     delay(BEEP_DURATION + BEEP_PAUSE);
     noTone(BUZZER_PIN);
     
-    // Small pause between beeps
     if (i < NUM_BEEPS) {
       delay(50);
     }
   }
   
-  // Ensure buzzer is completely off
   digitalWrite(BUZZER_PIN, LOW);
-  Serial.println("9 beeps completed - Buzzer off");
+  Serial.println("10 beeps completed - Buzzer off");
   Serial.println("------------------------------------------");
 }
 
-/**
- * Print debug information to serial monitor - Now includes BPM status
- */
+// Print debug information
 void printDebugInfo(bool heartAlert, bool tempAlert, bool humidityAlert) {
-  Serial.print("================SENSOR READINGS | ");
+  Serial.print(" SENSOR READINGS | ");
   Serial.print("Heart: "); 
   if (beatAvg > 0) {
     Serial.print(beatAvg);
@@ -450,7 +426,9 @@ void printDebugInfo(bool heartAlert, bool tempAlert, bool humidityAlert) {
     Serial.print("No Signal");
   }
   Serial.print(" [");
-  if (heartAlert) {
+  if (beatAvg > 0 && beatAvg < HEART_CRITICAL_LOW) {
+    Serial.print("CRITICAL");
+  } else if (heartAlert) {
     if (beatAvg < HEART_NORMAL_LOW) {
       Serial.print("LOW");
     } else {
