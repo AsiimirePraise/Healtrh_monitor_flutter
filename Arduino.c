@@ -66,9 +66,10 @@ const unsigned long CRITICAL_HEART_ALERT_INTERVAL = 30000;
 #define HEART_NORMAL_LOW 60
 #define HEART_NORMAL_HIGH 100
 #define HEART_CRITICAL_LOW 50
-#define HUMIDITY_LOW 50.0
-#define HUMIDITY_HIGH 65.0
-#define TEMP_ALERT_THRESHOLD 30.0
+#define HUMIDITY_LOW 30.0
+#define HUMIDITY_HIGH 70.0
+#define TEMP_NORMAL_LOW 28.0
+#define TEMP_NORMAL_HIGH 37.0
 #define CONSECUTIVE_TEMP_REQUIRED 5
 #define BLE_UPDATE_INTERVAL 60000UL
 
@@ -313,10 +314,11 @@ bool checkHumidityAlert() {
          (humidity < HUMIDITY_LOW || humidity > HUMIDITY_HIGH));
 }
 
-// Check temperature alert (consecutive high readings)
+// Check temperature alert (outside normal range)
 bool checkTemperatureAlert() {
   if (!isnan(temperature)) {
-    if (temperature > TEMP_ALERT_THRESHOLD) {
+    // Alert if temperature is outside the normal range (28-37°C)
+    if (temperature < TEMP_NORMAL_LOW || temperature > TEMP_NORMAL_HIGH) {
       consecutiveHighTempCount++;
     } else {
       consecutiveHighTempCount = 0;
@@ -359,10 +361,26 @@ void sendBLEData(bool heartAlert, bool tempAlert, bool humidityAlert) {
       Serial.print("HEART_ALERT_HIGH ");
     }
   }
-  if (tempAlert) Serial.print("TEMP_ALERT ");
+  if (tempAlert) {
+    if (temperature < TEMP_NORMAL_LOW) {
+      Serial.print("TEMP_ALERT_LOW ");
+    } else {
+      Serial.print("TEMP_ALERT_HIGH ");
+    }
+  }
   if (humidityAlert) Serial.print("HUMIDITY_ALERT ");
   if (!heartAlert && !tempAlert && !humidityAlert) Serial.print("ALL_NORMAL");
   Serial.println();
+  
+  Serial.print("Normal Ranges - Heart: ");
+  Serial.print(HEART_NORMAL_LOW);
+  Serial.print("-");
+  Serial.print(HEART_NORMAL_HIGH);
+  Serial.print(" BPM, Temp: ");
+  Serial.print(TEMP_NORMAL_LOW);
+  Serial.print("-");
+  Serial.print(TEMP_NORMAL_HIGH);
+  Serial.println("°C");
   
   pCharacteristic->setValue((uint8_t*)jsonData.c_str(), jsonData.length());
   pCharacteristic->notify();

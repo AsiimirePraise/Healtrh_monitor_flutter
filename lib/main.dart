@@ -4,10 +4,11 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
+import 'package:path/path.dart' as path;
 import 'dart:convert';
 import 'dart:async';
 import 'dart:math';
+import 'email_service.dart';
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
@@ -16,7 +17,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   const AndroidInitializationSettings initializationSettingsAndroid =
-      AndroidInitializationSettings('@mipmap/ic_launcher');
+      AndroidInitializationSettings('@mipmap/ic_icon');
   const DarwinInitializationSettings initializationSettingsIOS =
       DarwinInitializationSettings();
   const InitializationSettings initializationSettings = InitializationSettings(
@@ -82,7 +83,7 @@ class HealthMonitorHome extends StatefulWidget {
   State<HealthMonitorHome> createState() => _HealthMonitorHomeState();
 }
 
-class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTickerProviderStateMixin {
+class _HealthMonitorHomeState extends State<HealthMonitorHome> with TickerProviderStateMixin {
   List<BluetoothDevice> devices = [];
   BluetoothDevice? connectedDevice;
   
@@ -99,6 +100,14 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
   bool tempAlert = false;
   bool humidityAlert = false;
   bool logsExpanded = false;
+  
+  // Email functionality variables
+  List<Map<String, dynamic>> emailHistory = [];
+  String patientName = '';
+  bool showEmailHistory = false;
+  
+  // Tab controller for logs
+  late TabController _tabController;
   
   List<String> logs = [];
   final Random random = Random();
@@ -147,14 +156,17 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
     ));
     
     _animationController.repeat(reverse: true);
+    
+    // Initialize tab controller
+    _tabController = TabController(length: 2, vsync: this);
   }
 
   Future<void> _initDB() async {
     final databasesPath = await getDatabasesPath();
-    final path = join(databasesPath, 'health_monitor.db');
+    final pathStr = path.join(databasesPath, 'health_monitor.db');
     
     db = await openDatabase(
-      path,
+      pathStr,
       version: 1,
       onCreate: (Database db, int version) async {
         await db.execute(
@@ -215,6 +227,46 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
     await Permission.notification.request();
     addLog('✓ Permissions requested');
   }
+
+  Future<void> _sendEmailToDoctors() async {
+     try {
+       // Send email using EmailService
+       await EmailService.sendPatientDataEmail(
+         patientName: patientName.isEmpty ? 'Patient' : patientName,
+         heartRate: heartRate,
+         temperature: temperature,
+         humidity: humidity,
+         heartAlert: heartRate > 100 || heartRate < 60,
+         tempAlert: temperature > 37.5 || temperature < 35.0,
+         humidityAlert: humidity > 70 || humidity < 30,
+       );
+       
+       // Update email history
+       setState(() {
+         emailHistory.add({
+           'timestamp': DateTime.now().toString(),
+           'recipient': EmailService.doctorEmails.join(', '),
+           'status': 'Sent',
+           'error': null,
+         });
+       });
+       
+       addLog(' Email sent successfully to doctors');
+       _showNotification('Email Alert Sent', 'Medical staff has been notified of current vital signs.');
+     } catch (e) {
+       // Update email history with error
+       setState(() {
+         emailHistory.add({
+           'timestamp': DateTime.now().toString(),
+           'recipient': EmailService.doctorEmails.join(', '),
+           'status': 'Failed',
+           'error': e.toString(),
+         });
+       });
+       
+       addLog(' Email sending failed: $e');
+     }
+   }
 
   Future<void> _showNotification(String title, String body) async {
     final now = DateTime.now();
@@ -307,6 +359,70 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
     }
   }
 
+  void _checkAndSendAutomaticEmail(int heartRate, double temperature) async {
+    // Check if heart rate is below 60 or temperature is outside normal range
+    // Normal heart rate: 60-100 BPM
+    // Normal body temperature: 28°C to 37°C (as per user request)
+    bool shouldSendEmail = heartRate < 60 || temperature < 28.0 || temperature > 37.0;
+    
+    if (shouldSendEmail && patientName.isNotEmpty) {
+      // Check if we've sent an email recently (to avoid spam)
+      final now = DateTime.now();
+      final lastEmailTime = emailHistory.isNotEmpty 
+          ? DateTime.tryParse(emailHistory.last['timestamp'] ?? '') 
+          : null;
+      
+      bool canSendEmail = true;
+      if (lastEmailTime != null) {
+        final difference = now.difference(lastEmailTime);
+        // Only send email if at least 5 minutes have passed
+        if (difference.inMinutes < 5) {
+          canSendEmail = false;
+        }
+      }
+      
+      if (canSendEmail) {
+        try {
+          // Send email using EmailService
+          await EmailService.sendPatientDataEmail(
+            patientName: patientName,
+            heartRate: heartRate,
+            temperature: temperature,
+            humidity: humidity,
+            heartAlert: heartRate < 60, // Heart rate below normal
+            tempAlert: temperature < 28.0 || temperature > 37.0, // Temperature outside normal range
+            humidityAlert: humidity > 70 || humidity < 30,
+          );
+          
+          // Update email history
+          setState(() {
+            emailHistory.add({
+              'timestamp': DateTime.now().toString(),
+              'recipient': EmailService.doctorEmails.join(', '),
+              'status': 'Sent',
+              'error': null,
+            });
+          });
+          
+          addLog(' Automatic email sent to doctors');
+          _showNotification('Email Alert Sent', 'Medical staff has been notified of current vital signs.');
+        } catch (e) {
+          // Update email history with error
+          setState(() {
+            emailHistory.add({
+              'timestamp': DateTime.now().toString(),
+              'recipient': EmailService.doctorEmails.join(', '),
+              'status': 'Failed',
+              'error': e.toString(),
+            });
+          });
+          
+          addLog(' Automatic email sending failed: $e');
+        }
+      }
+    }
+  }
+
   void startScan() async {
     if (isScanning) return;
     
@@ -335,7 +451,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
         addLog('✓ Scan completed');
       });
     } catch (e) {
-      addLog('❌ Scan error: $e');
+      addLog(' Scan error: $e');
       setState(() => isScanning = false);
     }
   }
@@ -371,7 +487,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
       
       addLog('✓ Ready!');
     } catch (e) {
-      addLog('❌ Connection failed: $e');
+      addLog('Connection failed: $e');
     }
   }
 
@@ -431,6 +547,9 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
         tempAlert: newTempAlert,
       );
       
+      // Check if we should automatically send an email
+      _checkAndSendAutomaticEmail(newHeartRate, newTemp);
+      
       // Check temperature stability
       _checkTemperatureStability(newTemp);
       
@@ -459,7 +578,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
         _showNotification('High Temperature Alert', 'T: ${newTemp.toStringAsFixed(1)}°C. $advice');
       }
     } catch (e) {
-      addLog('❌ Parse error: $e');
+      addLog('Parse error: $e');
     }
   }
 
@@ -525,6 +644,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
   void dispose() {
     characteristicSubscription?.cancel();
     _animationController.dispose();
+    _tabController.dispose();
     disconnect();
     db.close();
     super.dispose();
@@ -569,107 +689,179 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
   }
 
   Widget _buildScanUI(bool isDark, Color bgColor, Color cardColor) {
-    return Column(
-      children: [
-        // Header Section
-        Container(
-          width: double.infinity,
-          padding: EdgeInsets.all(32),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: isDark 
-                ? [Color(0xFF1E3A8A), Color(0xFF3730A3)]
-                : [Color(0xFF3B82F6), Color(0xFF60A5FA)],
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          // Header Section
+          Container(
+            width: double.infinity,
+            padding: EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: isDark 
+                  ? [Color(0xFF1E3A8A), Color(0xFF3730A3)]
+                  : [Color(0xFF3B82F6), Color(0xFF60A5FA)],
+              ),
             ),
-          ),
-          child: Column(
-            children: [
-              ScaleTransition(
-                scale: _pulseAnimation,
-                child: Icon(
-                  Icons.monitor_heart,
-                  size: 64,
-                  color: Colors.white,
-                ),
-              ),
-              SizedBox(height: 16),
-              Text(
-                'VitaTrack Pro',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
-              SizedBox(height: 8),
-              Text(
-                'Connect your health monitoring device',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.white70,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-        
-        // Scan Button
-        Padding(
-          padding: const EdgeInsets.all(20),
-          child: AnimatedContainer(
-            duration: Duration(milliseconds: 300),
-            child: ElevatedButton(
-              onPressed: isScanning ? null : startScan,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Color(0xFF10B981),
-                foregroundColor: Colors.white,
-                elevation: 4,
-                shadowColor: Color(0xFF10B981).withOpacity(0.3),
-                minimumSize: const Size(double.infinity, 56),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (isScanning)
-                    SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation(Colors.white),
-                      ),
-                    )
-                  else
-                    Icon(Icons.search, size: 24),
-                  SizedBox(width: 12),
-                  Text(
-                    isScanning ? 'Scanning for Devices...' : 'Scan for Devices',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            child: Column(
+              children: [
+                ScaleTransition(
+                  scale: _pulseAnimation,
+                  child: Icon(
+                    Icons.monitor_heart,
+                    size: 64,
+                    color: Colors.white,
                   ),
-                ],
+                ),
+                SizedBox(height: 16),
+                Text(
+                  'VitaTrack Pro',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'Connect your health monitoring device',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.white70,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+          
+          // Patient Name Input
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            child: Card(
+              elevation: 2,
+              color: cardColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Patient Information',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    SizedBox(height: 12),
+                    TextField(
+                      decoration: InputDecoration(
+                        labelText: 'Patient Name',
+                        hintText: 'Enter patient name',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: Colors.grey.withOpacity(0.5),
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: Color(0xFF3B82F6),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      onChanged: (value) {
+                        setState(() {
+                          patientName = value;
+                        });
+                      },
+                    ),
+                    SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Icon(Icons.info, size: 16, color: Colors.grey),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Enter patient name to be included in automatic email reports',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
-        
-        // Devices List
-        Expanded(
-          child: AnimatedSwitcher(
-            duration: Duration(milliseconds: 500),
-            child: devices.isEmpty
-                ? _buildEmptyState(isDark)
-                : _buildDevicesList(isDark, cardColor),
+          
+          // Scan Button
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: AnimatedContainer(
+              duration: Duration(milliseconds: 300),
+              child: ElevatedButton(
+                onPressed: isScanning ? null : startScan,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFF10B981),
+                  foregroundColor: Colors.white,
+                  elevation: 4,
+                  shadowColor: Color(0xFF10B981).withOpacity(0.3),
+                  minimumSize: const Size(double.infinity, 56),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (isScanning)
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation(Colors.white),
+                        ),
+                      )
+                    else
+                      Icon(Icons.search, size: 24),
+                    SizedBox(width: 12),
+                    Text(
+                      isScanning ? 'Scanning for Devices...' : 'Scan for Devices',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
-        
-        _buildLogsWidget(isDark, cardColor),
-      ],
+          
+          // Devices List
+          SizedBox(
+            height: 300,
+            child: AnimatedSwitcher(
+              duration: Duration(milliseconds: 500),
+              child: devices.isEmpty
+                  ? _buildEmptyState(isDark)
+                  : _buildDevicesList(isDark, cardColor),
+            ),
+          ),
+          
+          _buildLogsWidget(isDark, cardColor),
+        ],
+      ),
     );
   }
 
@@ -758,6 +950,37 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
     return SingleChildScrollView(
       child: Column(
         children: [
+          // Welcome Message with Patient Name
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Card(
+              elevation: 2,
+              color: cardColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Icon(Icons.person, color: Color(0xFF3B82F6)),
+                    SizedBox(width: 12),
+                    Text(
+                      'Welcome, ${patientName.isEmpty ? 'Patient' : patientName}',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    Spacer(),
+                    // Remove the manual email button
+                  ],
+                ),
+              ),
+            ),
+          ),
+          
           // Heart Rate Card with Pulse Animation
           Padding(
             padding: const EdgeInsets.all(16),
@@ -1172,6 +1395,10 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
     );
   }
 
+  Widget _buildEmailHistoryWidget(bool isDark, Color cardColor) {
+    return Container();// we now use tabs for logs
+  }
+
   Widget _buildLogsWidget(bool isDark, Color cardColor) {
     return Card(
       margin: const EdgeInsets.all(16),
@@ -1185,7 +1412,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
           ListTile(
             leading: Icon(Icons.list_alt_rounded, color: Color(0xFF6B7280)),
             title: Text(
-              'System Logs',
+              'Logs',
               style: TextStyle(
                 fontWeight: FontWeight.w600,
                 color: isDark ? Colors.white : Colors.black87,
@@ -1194,23 +1421,17 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Tooltip(
-                  message: 'Clear Logs',
-                  child: IconButton(
-                    icon: Icon(Icons.clear_all, color: Color(0xFF6B7280)),
-                    onPressed: clearLogs,
-                  ),
+                IconButton(
+                  icon: Icon(Icons.clear_all, color: Color(0xFF6B7280)),
+                  onPressed: clearLogs,
+                  tooltip: 'Clear Logs',
                 ),
-                AnimatedSwitcher(
-                  duration: Duration(milliseconds: 300),
-                  child: IconButton(
-                    key: ValueKey(logsExpanded),
-                    icon: Icon(
-                      logsExpanded ? Icons.expand_less : Icons.expand_more,
-                      color: Color(0xFF6B7280),
-                    ),
-                    onPressed: () => setState(() => logsExpanded = !logsExpanded),
+                IconButton(
+                  icon: Icon(
+                    logsExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: Color(0xFF6B7280),
                   ),
+                  onPressed: () => setState(() => logsExpanded = !logsExpanded),
                 ),
               ],
             ),
@@ -1218,33 +1439,194 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with SingleTicker
           if (logsExpanded)
             AnimatedContainer(
               duration: Duration(milliseconds: 300),
-              height: 200,
-              child: ListView.builder(
-                reverse: true,
-                itemCount: logs.length,
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                itemBuilder: (context, index) => Container(
-                  padding: EdgeInsets.symmetric(vertical: 6),
-                  decoration: BoxDecoration(
-                    border: Border(
-                      bottom: index < logs.length - 1 
-                          ? BorderSide(color: Colors.grey.withOpacity(0.1))
-                          : BorderSide.none,
+              height: 250,
+              child: Column(
+                children: [
+                  // Tab bar for switching between logs
+                  TabBar(
+                    indicatorColor: Color(0xFF3B82F6),
+                    indicatorWeight: 3,
+                    labelColor: Color(0xFF3B82F6),
+                    unselectedLabelColor: Colors.grey,
+                    tabs: [
+                      Tab(text: 'System Logs'),
+                      Tab(text: 'Email Logs'),
+                    ],
+                    controller: _tabController,
+                  ),
+                  // Tab bar view
+                  Expanded(
+                    child: TabBarView(
+                      controller: _tabController,
+                      children: [
+                        // System Logs
+                        _buildSystemLogsView(isDark),
+                        // Email Logs
+                        _buildEmailLogsView(isDark),
+                      ],
                     ),
                   ),
-                  child: Text(
-                    logs[index],
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: Colors.grey[600],
-                      fontFamily: 'Monospace',
-                    ),
-                  ),
-                ),
+                ],
               ),
             ),
         ],
       ),
     );
+  }
+
+  Widget _buildSystemLogsView(bool isDark) {
+    return logs.isEmpty
+        ? Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.list, size: 48, color: Colors.grey[400]),
+                SizedBox(height: 12),
+                Text(
+                  'No system logs yet',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 16,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'System events will appear here',
+                  style: TextStyle(
+                    color: Colors.grey[500],
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          )
+        : ListView.builder(
+            reverse: true,
+            itemCount: logs.length,
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            itemBuilder: (ctx, index) => Container(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: index < logs.length - 1 
+                      ? BorderSide(color: Colors.grey.withOpacity(0.1))
+                      : BorderSide.none,
+                ),
+              ),
+              child: Text(
+                logs[index],
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.grey[600],
+                  fontFamily: 'Monospace',
+                ),
+              ),
+            ),
+          );
+  }
+
+  Widget _buildEmailLogsView(bool isDark) {
+    return emailHistory.isEmpty
+        ? Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.email_outlined, size: 48, color: Colors.grey[400]),
+                SizedBox(height: 12),
+                Text(
+                  'No email logs yet',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 16,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Email reports will appear here',
+                  style: TextStyle(
+                    color: Colors.grey[500],
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          )
+        : ListView.builder(
+            reverse: true,
+            itemCount: emailHistory.length,
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            itemBuilder: (ctx, index) {
+              final email = emailHistory[index];
+              return Container(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                decoration: BoxDecoration(
+                  border: Border(
+                    bottom: index < emailHistory.length - 1 
+                        ? BorderSide(color: Colors.grey.withOpacity(0.1))
+                        : BorderSide.none,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      email['status'] == 'Sent' 
+                          ? Icons.check_circle 
+                          : Icons.error,
+                      color: email['status'] == 'Sent' 
+                          ? Colors.green 
+                          : Colors.red,
+                      size: 16,
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            email['timestamp'].toString().split('.')[0],
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: isDark ? Colors.white70 : Colors.black87,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'To: ${email['recipient']}',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey[600],
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (email['error'] != null)
+                            Text(
+                              'Error: ${email['error']}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.red,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      email['status'],
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: email['status'] == 'Sent' 
+                            ? Colors.green 
+                            : Colors.red,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
   }
 }
