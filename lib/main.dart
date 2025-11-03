@@ -293,7 +293,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with TickerProvid
       );
       
       lastNotificationTime = now;
-      addLog('💬 Notification sent: $title');
+      addLog('Notification sent: $title');
     }
   }
 
@@ -331,7 +331,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with TickerProvid
       );
       
       lastStableTempNotificationTime = now;
-      addLog('🌡️ Stable temperature notification: ${temperature.toStringAsFixed(1)}°C');
+      addLog('Stable temperature notification: ${temperature.toStringAsFixed(1)}°C');
     }
   }
 
@@ -352,7 +352,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with TickerProvid
       
       // If temperature variation is within threshold, consider it stable
       if (variation <= STABLE_TEMP_THRESHOLD) {
-        addLog('🌡️ Temperature stable at ${newTemperature.toStringAsFixed(1)}°C (variation: ${variation.toStringAsFixed(1)}°C)');
+        addLog('Temperature stable at ${newTemperature.toStringAsFixed(1)}°C (variation: ${variation.toStringAsFixed(1)}°C)');
         _showStableTemperatureNotification();
         recentTemperatures.clear(); // Reset after notification to avoid spam
       }
@@ -458,7 +458,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with TickerProvid
 
   void connectToDevice(BluetoothDevice device) async {
     try {
-      addLog('➡️ Connecting...');
+      addLog('Connecting...');
       await device.connect();
       addLog('✓ Connected!');
       
@@ -468,7 +468,7 @@ class _HealthMonitorHomeState extends State<HealthMonitorHome> with TickerProvid
         for (BluetoothCharacteristic char in service.characteristics) {
           if (char.properties.notify || char.properties.indicate) {
             await char.setNotifyValue(true);
-            addLog('✅ Listening for data');
+            addLog('Listening for data');
             
             characteristicSubscription = char.onValueReceived.listen((value) {
               handleBLEData(value);

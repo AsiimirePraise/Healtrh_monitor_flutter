@@ -148,14 +148,14 @@ class EmailService {
         <div class="vital">
           <strong>Temperature:</strong> 
           <span class="${tempAlert ? 'alert' : 'normal'}">
-            ${temperature.toStringAsFixed(1)}°C ${tempAlert ? ' ALERT: Abnormal temperature' : '✓ Normal'}
+            ${temperature.toStringAsFixed(1)}°C ${tempAlert ? ' ALERT: Abnormal temperature' : 'Normal'}
           </span>
         </div>
         
         <div class="vital">
           <strong>Humidity:</strong> 
           <span class="${humidityAlert ? 'alert' : 'normal'}">
-            ${humidity.toStringAsFixed(1)}% ${humidityAlert ? ' ALERT: Abnormal humidity' : '✓ Normal'}
+            ${humidity.toStringAsFixed(1)}% ${humidityAlert ? ' ALERT: Abnormal humidity' : 'Normal'}
           </span>
         </div>
         
